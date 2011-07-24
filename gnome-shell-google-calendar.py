@@ -174,6 +174,7 @@ class CalendarServer(dbus.service.Object):
             query.feed = feed_url
             query.start_min = min_date.strftime('%Y-%m-%d')
             query.start_max = max_date.strftime('%Y-%m-%d')
+            query.max_results = 2**31-1
             feed = self.client.CalendarQuery(query)
 
             for event in feed.entry:
@@ -198,7 +199,7 @@ class CalendarServer(dbus.service.Object):
             self.months[key] = month
 
         print prefix, '#Updated events since', min_date.strftime('%Y-%m-%d'), \
-                'until', max_date
+                'until', max_date.strftime('%Y-%m-%d')
 
     def need_update_near(self, key, months_back=4, months_ahead=4):
         """Checks if around month declared by `key` are old or not cahed
@@ -253,7 +254,7 @@ class CalendarServer(dbus.service.Object):
 
         key = (since, until)
 
-#        print '  key:', key, 'in months?', (key in self.months)
+        print '  key:', key, 'in months?', (key in self.months)
 
         if not key in self.months:
             print '  Month not yet downloaded'
