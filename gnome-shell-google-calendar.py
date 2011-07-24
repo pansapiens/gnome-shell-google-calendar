@@ -1,21 +1,20 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 from datetime import datetime, timedelta
-from time import mktime, sleep
 from getpass import getpass
 from threading import Thread
+from time import mktime, sleep
 
-import gtk
-import dbus
-import dbus.service
-import dbus.mainloop.glib
 from gdata.calendar.service import CalendarService, CalendarEventQuery
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+import gtk
 import iso8601
-
 import keyring
 
 
-def calendar_month_range(date, first_day_of_week=7):
+def get_month_key(date, first_day_of_week=7):
     """Returns range of dates displayed on calendars for `date`'s month.
     Parameters:
      - `date`: definies month which's range to return
@@ -41,23 +40,69 @@ def calendar_month_range(date, first_day_of_week=7):
 
 
 class MonthEvents(object):
+    """
+    Caches events of month
+    """
     def __init__(self, key, events):
         self.start = key[0]
         self.end = key[1]
-        self.events = events
+#        self.events = []
+        self.gnome_events = []
+        for event in events:
+            self.add_event(event)
         self.last_update = datetime.now()
 
+    def delete(self):
+        print 'v'
+        del self.start
+        del self.end
+#        del self.events[:]
+        del self.gnome_events[:]
+        del self.last_update
+        print '^'
+
     def add_event(self, event):
-        if (event.start_time >= self.start and event.start_time < self.end) or\
-                (event.start_time <= self.start and
-                event.end_time - 1 > self.start):
-            self.events.append(event)
+        """Adds event to events and gnome_events if in month's range"""
+        start = self.start
+        end = self.end
+        if (event.start_time >= start and event.start_time < end) or\
+                (event.start_time <= start and event.end_time - 1 > start):
+#            self.events.append(event)
+            self.gnome_events.append(('',    # uid
+                           event.title,      # summary
+                           '',               # description
+                           event.allday,     # allDay
+                           event.start_time, # date
+                           event.end_time,   # end
+                           {}))              # extras
 
     def updated(self):
         self.last_update = datetime.now()
 
     def needs_update(self, timeout=timedelta(minutes=10)):
         return self.last_update + timeout < datetime.now()
+
+    def get_key(self):
+        return self.start, self.end
+
+    def get_prev_month_key(self):
+        probe_date = self.get_start_date() - timedelta(days=1)
+        return get_month_key(probe_date)
+
+    def get_next_month_key(self):
+        probe_date = self.get_end_date() + timedelta(days=1)
+        return get_month_key(probe_date)
+
+    def get_start_date(self):
+        return datetime.fromtimestamp(self.start)
+
+    def get_end_date(self):
+        return datetime.fromtimestamp(self.end)
+
+    def __repr__(self):
+        return u'<MonthEvents: %s, with %d events>' % (
+                (self.get_start_date() + timedelta(days=10)).strftime('%B %Y'),
+                len(self.gnome_events))
 
 
 class Event(object):
@@ -88,10 +133,37 @@ class CalendarServer(dbus.service.Object):
         # Events indexed by (since, until)
         self.months = {}
 
+        # Thread used to fetch events in background
         self.updater = Thread()
+
+        # Thread keeping events updated
+        self.scheduler = Thread(target=self.scheduler,
+                                args=(timedelta(minutes=1),))
+        self.scheduler.daemon = True
+        print 'daemoned'
+        self.scheduler.start()
+        print 'started'
 
         # Make threading work
         gtk.gdk.threads_init()
+
+    def scheduler(self, timeout):
+        while 1:
+            sleep(timeout.seconds)
+            print 'Checking if actual month events need update...'
+            if self.months[get_month_key(datetime.now())].needs_update():
+                while self.updater.is_alive():
+                    sleep(1)
+                    print 'Scheduler waiting for updater thread to end...'
+                if self.months[get_month_key(datetime.now())].needs_update():
+                    print 'Scheduler starts updater thread...'
+                    self.updater = Thread(target=self.update_months_events,
+                                        args=(datetime.now(), True))
+                    self.updater.start()
+                else:
+                    print 'Updater thread updated actual month'
+            else:
+                print 'No need for update'
 
     def get_calendars(self):
         feed = self.client.GetAllCalendarsFeed()
@@ -107,7 +179,7 @@ class CalendarServer(dbus.service.Object):
 
             if not url in urls:
                 print '  ', title
-                print '    ', url
+#                print '    ', url
                 urls.add(url)
                 calendars.append((title, url))
 
@@ -127,43 +199,37 @@ class CalendarServer(dbus.service.Object):
 
         return (timestamp, allday)
 
-    def update_months_events(self, since_date, until_date, in_thread=False,
+    def update_months_events(self, probe_date, in_thread=False,
                             months_back=12, months_ahead=12):
-
         if in_thread:
             prefix = '      <<<<THREAD>>>>  '
         else:
             prefix = '    '
 
-        print prefix, 'Update months events:', since_date, 'until',\
-                until_date, '| months_back', months_back, '| months_ahead',\
-                months_ahead
+        print prefix, 'Update months events around:',\
+                probe_date.strftime('%B %Y'), '| months_back', months_back,\
+                '| months_ahead', months_ahead
 
         months = {}
 
-        since = int(mktime(since_date.timetuple()))
-        until = int(mktime(until_date.timetuple()))
-
-        min_date = since
-        max_date = until
-
-        key = (since, until)
+        # init asked month events
+        key = initial_month_key = get_month_key(probe_date)
         months[key] = MonthEvents(key, [])
 
-        probe_date = since_date
+        # init previous months events
         for i in range(0, months_back):
-            probe_date -= timedelta(days=1)
-            key = calendar_month_range(probe_date)
+            key = months[key].get_prev_month_key()
             months[key] = MonthEvents(key, [])
-            probe_date = min_date = datetime.fromtimestamp(key[0])
+        # date for google query start limit
+        min_date = months[key].get_start_date()
 
-
-        probe_date = until_date
+        # init next months events
+        key = initial_month_key
         for i in range(0, months_ahead):
-            probe_date += timedelta(days=1)
-            key = calendar_month_range(probe_date)
+            key = months[key].get_next_month_key()
             months[key] = MonthEvents(key, [])
-            probe_date = max_date = datetime.fromtimestamp(key[1])
+        # date for google query end limit
+        max_date = months[key].get_end_date()
 
         # Get events from all calendars
         for calendar, feed_url in self.calendars:
@@ -193,44 +259,51 @@ class CalendarServer(dbus.service.Object):
                     for _, month in months.items():
                         month.add_event(e)
 
+        # Replace old months events by new ones
+        # TODO repair deletion if python doesn't do it
         for key, month in months.items():
             month.updated()
+#            print '!'
+#            self.months[key].delete()
+#            print '!'
+#            del self.months[key]
             self.months[key] = month
 
-        print prefix, '#Updated events since', min_date.strftime('%Y-%m-%d'), \
-                'until', max_date.strftime('%Y-%m-%d')
+        print prefix, '#Updated events since', \
+                (min_date + timedelta(days=10)).strftime('%B %Y'), \
+                'until', (max_date - timedelta(days=10)).strftime('%B %Y')
 
-    def need_update_near(self, key, months_back=4, months_ahead=4):
-        """Checks if around month declared by `key` are old or not cahed
-        months"""
+    def need_update_near(self, _key, months_back=6, months_ahead=6):
+        """Check if months around month declared by `key` need update or not
+        yet fetched"""
+        key = _key
 
+        # Check if this month needs update
         if self.months[key].needs_update():
             return True
 
-        probe_date_back = datetime.fromtimestamp(key[0])
-        probe_date_ahead = datetime.fromtimestamp(key[1])
-
+        # Check if previous months need update of not fetched
         for i in range(0, months_back):
-            probe_date_back -= timedelta(days=1)
-            key = calendar_month_range(probe_date_back)
+            key = self.months[key].get_prev_month_key()
             month = self.months.get(key, None)
             if month:
                 if self.months[key].needs_update():
                     return True
             else:
                 return True
-            probe_date_back = datetime.fromtimestamp(key[0])
 
+        # Check if next months need update of not fetched
+        key = _key
         for i in range(0, months_ahead):
-            probe_date_ahead += timedelta(days=1)
-            key = calendar_month_range(probe_date_ahead)
+            key = self.months[key].get_next_month_key()
             month = self.months.get(key, None)
             if month:
                 if self.months[key].needs_update():
                     return True
             else:
                 return True
-            probe_date_ahead = datetime.fromtimestamp(key[1])
+
+        # All up to date
         return False
 
     @dbus.service.method('org.gnome.Shell.CalendarServer',
@@ -240,20 +313,14 @@ class CalendarServer(dbus.service.Object):
         until = int(until)
         force_reload = bool(force_reload)
 
-        print "GetEvents(since=%s, until=%s, force_reload=%s)" % \
+        print "\nGetEvents(since=%s, until=%s, force_reload=%s)" % \
                 (since, until, force_reload)
 
         probe_date = datetime.fromtimestamp(since) + timedelta(days=10)
 
-        since, until = calendar_month_range(probe_date)
+        print '  Getting events for:', probe_date.strftime('%B %Y')
 
-        since_date = datetime.fromtimestamp(since)
-        until_date = datetime.fromtimestamp(until)
-        print '  since', since_date, 'until', until_date
-
-        key = (since, until)
-
-        print '  key:', key, 'in months?', (key in self.months)
+        key = get_month_key(probe_date)
 
         if not key in self.months:
             print '  Month not yet downloaded'
@@ -261,34 +328,21 @@ class CalendarServer(dbus.service.Object):
                 print '  Waiting for updater thread to end...'
                 sleep(1)
             if not key in self.months:
-                print ' Month was\'nt downloaded by thread. Updating...'
-                self.update_months_events(since_date, until_date)
+                print '  Updating...'
+                self.update_months_events(probe_date)
             else:
                 print '  Month was downloaded by thread'
         elif (not self.updater.is_alive()) and self.need_update_near(key):
             print '  Old cache. Starting updater thread...'
             self.updater = Thread(target=self.update_months_events,
-                                    args=(since_date, until_date, True))
+                                    args=(probe_date, True))
             self.updater.start()
         else:
             print '  Data loaded form cache'
 
-        events = []
+        print ' #Returning', len(self.months[key].gnome_events), 'events...'
 
-        for event in self.months[key].events:
-            #print event.title
-
-            events.append(('',               # uid
-                           event.title,      # summary
-                           '',               # description
-                           event.allday,     # allDay
-                           event.start_time, # date
-                           event.end_time,   # end
-                           {}))              # extras
-
-        print ' Returning', len(events), 'events...'
-
-        return events
+        return self.months[key].gnome_events
 
 
 def login(email, password):
