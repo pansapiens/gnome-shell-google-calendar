@@ -133,6 +133,9 @@ class CalendarServer(dbus.service.Object):
         # Events indexed by (since, until)
         self.months = {}
 
+        # Make threading work
+        gtk.gdk.threads_init()
+
         # Thread used to fetch events in background
         self.updater = Thread()
 
@@ -140,22 +143,19 @@ class CalendarServer(dbus.service.Object):
         self.scheduler = Thread(target=self.scheduler,
                                 args=(timedelta(minutes=1),))
         self.scheduler.daemon = True
-        print 'daemoned'
         self.scheduler.start()
-        print 'started'
-
-        # Make threading work
-        gtk.gdk.threads_init()
 
     def scheduler(self, timeout):
         while 1:
             sleep(timeout.seconds)
             print 'Checking if actual month events need update...'
-            if self.months[get_month_key(datetime.now())].needs_update():
+            if self.months[get_month_key(datetime.now())].\
+                    needs_update(timedelta(minutes=2)):
                 while self.updater.is_alive():
                     sleep(1)
                     print 'Scheduler waiting for updater thread to end...'
-                if self.months[get_month_key(datetime.now())].needs_update():
+                if self.months[get_month_key(datetime.now())].\
+                        needs_update(timedelta(minutes=2)):
                     print 'Scheduler starts updater thread...'
                     self.updater = Thread(target=self.update_months_events,
                                         args=(datetime.now(), True))
