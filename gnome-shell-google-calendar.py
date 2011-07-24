@@ -1,6 +1,5 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-from copy import deepcopy
 from datetime import datetime, timedelta
 from time import mktime, sleep
 from getpass import getpass
