@@ -46,20 +46,16 @@ class MonthEvents(object):
     def __init__(self, key, events):
         self.start = key[0]
         self.end = key[1]
-#        self.events = []
         self.gnome_events = []
         for event in events:
             self.add_event(event)
         self.last_update = datetime.now()
 
     def delete(self):
-        print 'v'
         del self.start
         del self.end
-#        del self.events[:]
         del self.gnome_events[:]
         del self.last_update
-        print '^'
 
     def add_event(self, event):
         """Adds event to events and gnome_events if in month's range"""
@@ -67,14 +63,13 @@ class MonthEvents(object):
         end = self.end
         if (event.start_time >= start and event.start_time < end) or\
                 (event.start_time <= start and event.end_time - 1 > start):
-#            self.events.append(event)
-            self.gnome_events.append(('',    # uid
-                           event.title,      # summary
-                           '',               # description
-                           event.allday,     # allDay
-                           event.start_time, # date
-                           event.end_time,   # end
-                           {}))              # extras
+            self.gnome_events.append(('',                       # uid
+                           event.title if event.title else '',  # summary
+                           '',                                  # description
+                           event.allday,                        # allDay
+                           event.start_time,                    # date
+                           event.end_time,                      # end
+                           {}))                                 # extras
 
     def updated(self):
         self.last_update = datetime.now()
