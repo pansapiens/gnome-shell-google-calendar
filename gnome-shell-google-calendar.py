@@ -13,6 +13,8 @@ import gtk
 import iso8601
 import keyring
 
+# don't show events for these calendars
+EXCLUDE_CALENDARS = ["X-ray1", "X-ray2", "Remember The Milk"]
 
 def get_month_key(date, first_day_of_week=7):
     """Returns range of dates displayed on calendars for `date`'s month.
@@ -115,7 +117,7 @@ class CalendarServer(dbus.service.Object):
     busname = 'org.gnome.Shell.CalendarServer'
     object_path = '/org/gnome/Shell/CalendarServer'
 
-    def __init__(self, client):
+    def __init__(self, client, exclude=[]):
         bus = dbus.service.BusName(self.busname,
                                         bus=dbus.SessionBus(),
                                         replace_existing=True)
@@ -123,7 +125,8 @@ class CalendarServer(dbus.service.Object):
         super(CalendarServer, self).__init__(bus, self.object_path)
 
         self.client = client
-        self.calendars = self.get_calendars()
+        self.exclude = exclude
+        self.calendars = self.get_calendars(exclude=exclude)
 
         # Events indexed by (since, until)
         self.months = {}
@@ -160,7 +163,7 @@ class CalendarServer(dbus.service.Object):
             else:
                 print 'No need for update'
 
-    def get_calendars(self):
+    def get_calendars(self, exclude=[]):
         feed = self.client.GetAllCalendarsFeed()
 
         calendars = []
@@ -172,7 +175,7 @@ class CalendarServer(dbus.service.Object):
             title = calendar.title.text
             url = calendar.content.src
 
-            if not url in urls:
+            if (not url in urls) and (title not in exclude):
                 print '  ', title
 #                print '    ', url
                 urls.add(url)
@@ -380,5 +383,5 @@ if __name__ == '__main__':
             email, password = login_prompt()
             keyring.set_credentials(email, password)
 
-    myserver = CalendarServer(client)
+    myserver = CalendarServer(client, exclude=EXCLUDE_CALENDARS)
     gtk.main()
